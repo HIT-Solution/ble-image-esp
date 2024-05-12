@@ -14,12 +14,15 @@ class BLEImageTransfer extends StatefulWidget {
   const BLEImageTransfer({super.key});
 
   @override
-  _BLEImageTransferState createState() => _BLEImageTransferState();
+  State<BLEImageTransfer> createState() => _BLEImageTransferState();
 }
 
 class _BLEImageTransferState extends State<BLEImageTransfer> {
   StreamSubscription? scanSubscription;
   BluetoothDevice? targetDevice;
+  final String targetDeviceName = "ESP32_BLE_Image_Receiver";
+  final String serviceUUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  final String characteristicUUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
   BluetoothCharacteristic? targetCharacteristic;
 
   @override
@@ -45,7 +48,8 @@ class _BLEImageTransferState extends State<BLEImageTransfer> {
     print("run 4");
     FlutterBluePlus.startScan(timeout: Duration(seconds: 5));
 
-    scanSubscription = FlutterBluePlus.scanResults.listen((scanResult) async {
+    FlutterBluePlus.scanResults.listen((scanResult) async {
+      if (targetCharacteristic != null) return;
       print("run 5");
       for (ScanResult result in scanResult) {
         print("run 6");
@@ -71,40 +75,25 @@ class _BLEImageTransferState extends State<BLEImageTransfer> {
   }
 
   Future<void> connectToDevice() async {
-    try {
-      if (targetDevice != null) {
-        await targetDevice?.disconnect();
-        await targetDevice!.connect();
-        // Request a larger MTU size
-        int newMtu =
-            await targetDevice!.requestMtu(5000); // Requesting 517 as example
-        print("Negotiated MTU: $newMtu");
-        discoverServices();
-      } else {
-        print('not connnect for ');
-      }
-    } on Exception catch (e) {
-      print('not connnect for $e');
-      // TODO
+    if (targetDevice != null) {
+      await targetDevice?.disconnect();
+      await targetDevice!.connect();
+      int newMtu = await targetDevice!.requestMtu(517);
+      debugPrint("Negotiated MTU: $newMtu");
+      discoverServices();
     }
   }
 
   Future<void> discoverServices() async {
-    print("run 11");
     if (targetDevice == null) return;
-
-    print("run 12");
     List<BluetoothService> services = await targetDevice!.discoverServices();
     for (BluetoothService service in services) {
-      if (service.uuid.toString() == "4fafc201-1fb5-459e-8fcc-c5c9c331914b") {
-        // Adjust UUID
+      if (service.uuid.toString() == serviceUUID) {
         for (BluetoothCharacteristic characteristic
             in service.characteristics) {
-          if (characteristic.uuid.toString() ==
-              "beb5483e-36e1-4688-b7f5-ea07361b26a8") {
-            // Adjust UUID
+          if (characteristic.uuid.toString() == characteristicUUID) {
             targetCharacteristic = characteristic;
-            print("run 13");
+            break;
           }
         }
       }
@@ -112,27 +101,65 @@ class _BLEImageTransferState extends State<BLEImageTransfer> {
   }
 
   Future<void> sendImage() async {
-    // Load the image from assets
-    print("run 14");
-    ByteData data = await rootBundle.load('assets/fruite.png');
-    print("run $data");
-    Uint8List imageData = data.buffer.asUint8List();
-    print("run 2 $imageData");
+    try {
+      ByteData data = await rootBundle.load('assets/fruite.png');
+      Uint8List imageData = data.buffer.asUint8List();
+      // Split data into chunks
+      const int mtu = 20; // Check MTU size for your device/connection
+      // const int mtu = 512; // Check MTU size for your device/connection
+      int rounds = (imageData!.length / mtu).ceil();
+      print("started transmit");
+      print("started transmit");
 
-    // Chunk and send imageData
-    await targetCharacteristic!.write(imageData.toList());
-    const int chunkSize = 20;
-    for (var i = 0; i < imageData.length; i += chunkSize) {
-      int end =
-          (i + chunkSize < imageData.length) ? i + chunkSize : imageData.length;
-      print("run 66");
-      print("run 77");
-      await Future.delayed(const Duration(
-          milliseconds:
-              20)); // A small delay to prevent overwhelming the receiver
-      print("run 78");
+      for (int i = 0; i < rounds; i++) {
+        int start = i * mtu;
+        int end = ((i + 1) * mtu < imageData!.length)
+            ? (i + 1) * mtu
+            : imageData!.length;
+        print("start $start end $end current $i");
+        await targetCharacteristic!
+            .write(imageData!.sublist(start, end), timeout: 60);
+      }
+      print("end transmit");
+      // Optionally, send an "end" message to signal transmission completion
+      await targetCharacteristic?.write(Uint8List.fromList([101, 110, 100]),
+          withoutResponse: false, timeout: 60); // Sends "end" as ASCII
+
+      debugPrint("Image successfully sent!");
+    } on Exception catch (e) {
+      debugPrint("error get.. ${e.toString()}");
+      // TODO
     }
+    debugPrint("the end!");
   }
+  // Future<void> sendImage() async {
+  //   try {
+  //     ByteData data = await rootBundle.load('assets/fruite.png');
+  //     Uint8List imageData = data.buffer.asUint8List();
+  //     const int chunkSize = 512; // Adjust according to negotiated MTU
+  //     int offset = 0;
+  //     debugPrint("Image data : ${imageData.length} ${imageData}..........");
+
+  //     while (offset < imageData.length) {
+  //       int end = (offset + chunkSize < imageData.length)
+  //           ? offset + chunkSize
+  //           : imageData.length;
+  //       Uint8List chunk = imageData.sublist(offset, end);
+  //       await targetCharacteristic?.write(chunk, withoutResponse: false);
+  //       offset += chunkSize;
+  //     }
+
+  //     // Optionally, send an "end" message to signal transmission completion
+  //     await targetCharacteristic?.write(Uint8List.fromList([101, 110, 100]),
+  //         withoutResponse: false); // Sends "end" as ASCII
+
+  //     debugPrint("Image successfully sent!");
+  //   } on Exception catch (e) {
+  //     debugPrint("error get.. ${e.toString()}");
+  //     // TODO
+  //   }
+  //   debugPrint("the end!");
+  // }
 
   @override
   Widget build(BuildContext context) {
